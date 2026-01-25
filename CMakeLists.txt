@@ -48,6 +48,8 @@ pico_enable_stdio_usb(drumzio 0)
 
 # Add the standard library to the build
 target_link_libraries(drumzio
+        pico_stdlib
+        hardware_adc
         tinyusb_device
         tinyusb_board
         pico_stdlib)
