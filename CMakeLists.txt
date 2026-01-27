@@ -37,6 +37,7 @@ pico_sdk_init()
 
 add_executable(drumzio drumzio.c
                        usb_descriptors.c
+					   drum_trigger.c
               )
 
 pico_set_program_name(drumzio "drumzio")
