@@ -85,6 +85,7 @@ int main(void)
 	stdio_init_all();
 
 	// Select ADC0 and ADC1
+	adc_init();
 	adc_gpio_init(26); // GPIO 26 corresponds to ADC0
 	adc_gpio_init(27); // GPIO 27 corresponds to ADC1
 	adc_set_temp_sensor_enabled(false);
@@ -109,9 +110,8 @@ int main(void)
 		rim = adc_read();
 
 		// determine if drum was hit
-		//drum_hit_t hit = drum_trigger_update (&st, &cfg, head, rim, board_millis());
-		//hid_task (hit.kind);
-		hid_task (DRUM_HIT_NONE); // TODO: replace with real hit detection
+		drum_hit_t hit = drum_trigger_update (&st, &cfg, head, rim, board_millis());
+		hid_task (hit.kind);
 		sleep_us (200); // ~5 kHz
 	}
 }
