@@ -1,3 +1,28 @@
+/*
+Electronic diagram
+
+Piezo + o---R1--+---+---+---+--------------------> GPIO26 (ADC0)
+            	|   |   |   |
+			    D1  R2  C1  D2
+			    |   |   |   |
+                |   +---+---+--------------------> GPIO28 (AGND)
+				+--------------------------------> 3.3V OUT (PIN 36)
+Piezo - o----------------------------------------> GPIO28 (AGND)
+
+R1 = 1 kOhm
+R2 = 1 MOhm
+C1 = 4.7 nF
+D1 = diode Shottky BAT85 (barre - cathode- du côté du +3.3V, anode du côté du piezo)
+D2 = diode Shottky BAT85 (barre - cathode- du côté du GPIO26, anode du côté du AGND)
+
+Sur le typon, côté cuivre:
+Piezo +	o		> GPIO26 (ADC0)
+				> 3.3V
+				> AGND
+Piezo - o		> AGND
+				> 3.3V
+*/
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
