@@ -30,7 +30,6 @@ static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
 void led_blinking_task(void);
 void hid_task(drum_hit_kind_t);
-uint32_t now_ms(void);
 
 
 //--------------------------------------------------------------------+
@@ -88,12 +87,7 @@ int main(void)
 	// Select ADC0 and ADC1
 	adc_gpio_init(26); // GPIO 26 corresponds to ADC0
 	adc_gpio_init(27); // GPIO 27 corresponds to ADC1
-
-	// Set the ADC to the specified width (e.g., 12 bits)
-	adc_select_input(0); // Select ADC0
-	adc_set_temp_sensor_enabled(false); 
-	adc_select_input(1); // Select ADC1
-	adc_set_temp_sensor_enabled(false); 
+	adc_set_temp_sensor_enabled(false);
 
 	// init device stack on configured roothub port
 	tud_init(BOARD_TUD_RHPORT);
@@ -115,18 +109,11 @@ int main(void)
 		rim = adc_read();
 
 		// determine if drum was hit
-		drum_hit_t hit = drum_trigger_update (&st, &cfg, head, rim, now_ms());
-		hid_task (hit.kind);
+		//drum_hit_t hit = drum_trigger_update (&st, &cfg, head, rim, board_millis());
+		//hid_task (hit.kind);
+		hid_task (DRUM_HIT_NONE); // TODO: replace with real hit detection
 		sleep_us (200); // ~5 kHz
 	}
-}
-
-//--------------------------------------------------------------------+
-// FUNCTIONS
-//--------------------------------------------------------------------+
-
-static inline uint32_t now_ms(void) {
-		return to_ms_since_boot(get_absolute_time());
 }
 
 
@@ -209,7 +196,7 @@ void hid_task(drum_hit_kind_t kind)
 	static uint32_t start_ms = 0;
 
 	if (kind == previous_kind) {								// no drum hit, check whether 10ms have elapsed
-		if ( board_millis() - start_ms < interval_ms) return;	// not enough time and no drum hit: return
+		if ((board_millis() - start_ms) < interval_ms) return;	// not enough time and no drum hit: return
 	}
 
 	start_ms = board_millis();									// here: either 10ms have elapsed, or a drum event occured; in any case, we send a HID report

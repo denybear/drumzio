@@ -80,6 +80,10 @@ typedef struct {
 // ----------------------------
 // Helpers
 // ----------------------------
+// small utility helpers for max operations
+static inline uint16_t u16_max(uint16_t a, uint16_t b) { return (a > b) ? a : b; }
+static inline uint32_t u32_max(uint32_t a, uint32_t b) { return (a > b) ? a : b; }
+
 static inline void drum_trigger_init(drum_trigger_state_t *st) {
 	*st = (drum_trigger_state_t){0};
 }
