@@ -130,9 +130,9 @@ int main(void)
 
 		// read ADC
 		adc_select_input(0);
-		head = adc_read(); // 0..4095
+		rim = adc_read(); // 0..4095
 		adc_select_input(1);
-		rim = adc_read();
+		head = adc_read();
 
 		// determine if drum was hit
 		drum_hit_t hit = drum_trigger_update (&st, &cfg, head, rim, board_millis());
