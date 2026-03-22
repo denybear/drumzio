@@ -190,9 +190,9 @@ static void send_hid_report(uint8_t report_id, uint32_t btn, drum_hit_kind_t kin
 		{
 			uint8_t keycode[6] = { 0 };
 			if (btn) keycode[0] = HID_KEY_A;
-			if (kind == DRUM_HIT_HEAD) keycode[0] = HID_KEY_B;
-			if (kind == DRUM_HIT_RIM) keycode[0] = HID_KEY_C;
-			if (kind == DRUM_HIT_BOTH) keycode[0] = HID_KEY_D;
+			if (kind == DRUM_HIT_HEAD) keycode[0] = HID_KEY_H;
+			if (kind == DRUM_HIT_RIM) keycode[0] = HID_KEY_R;
+			if (kind == DRUM_HIT_BOTH) keycode[0] = HID_KEY_B;
 
 			// if there is something to send, send a keypress; otherwise send a null report to indicate a key-depress
 			if (keycode[0] != 0) {
