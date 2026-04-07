@@ -11,6 +11,12 @@ static inline uint32_t ratio_q15(uint16_t maxv, uint16_t minv) {
 	return ((uint32_t)maxv << 15) / (uint32_t)minv;
 }
 
+static inline uint16_t u16_max(uint16_t a, uint16_t b) { return a > b ? a : b; }
+static inline uint16_t u16_min(uint16_t a, uint16_t b) { return a < b ? a : b; }
+static inline uint32_t u32_max(uint32_t a, uint32_t b) { return a > b ? a : b; }
+static inline uint32_t u32_min(uint32_t a, uint32_t b) { return a < b ? a : b; }
+
+
 drum_hit_t drum_trigger_update(drum_trigger_state_t *st,
 							   const drum_trigger_cfg_t *cfg,
 							   uint16_t adc_head, uint16_t adc_rim,
@@ -77,17 +83,18 @@ drum_hit_t drum_trigger_update(drum_trigger_state_t *st,
 		} else if (!head_hit && rim_hit) {
 			out.kind = DRUM_HIT_RIM;
 		} else { // head_hit && rim_hit
-			// Les deux dépassent le seuil haut : rimshot ou double-hit.
-			// Décide BOTH si pics proches (ratio <= both_ratio) ET secondaire assez grand.
+			// Both exceeded high thresholds: check if they're balanced enough to be BOTH
+			// Simple rule: if both are strong (>= th_high) and neither is more than 2x stronger, it's BOTH
 			uint16_t maxv = (ph >= pr) ? ph : pr;
 			uint16_t minv = (ph >= pr) ? pr : ph;
-
-			uint32_t r = ratio_q15(maxv, minv);
-			bool secondary_ok = (minv >= cfg->min_secondary_for_both);
-
-			if (secondary_ok && (r <= cfg->both_ratio_q15)) {
+			
+			// Ratio 2.0 = allow one channel to be at most 2x stronger than the other
+			bool balanced_enough = (maxv <= minv * 2);
+			
+			if (balanced_enough) {
 				out.kind = DRUM_HIT_BOTH;
 			} else {
+				// One channel much stronger: classify as the dominant one
 				out.kind = (ph >= pr) ? DRUM_HIT_HEAD : DRUM_HIT_RIM;
 			}
 		}

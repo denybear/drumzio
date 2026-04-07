@@ -1,26 +1,21 @@
 /*
 Electronic diagram
 
-Piezo + o---R1--+---+---+---+--------------------> GPIO26 (ADC0)
-            	|   |   |   |
-			    D1  R2  C1  D2
-			    |   |   |   |
-                |   +---+---+--------------------> GPIO28 (AGND)
-				+--------------------------------> 3.3V OUT (PIN 36)
-Piezo - o----------------------------------------> GPIO28 (AGND)
+Piezo + o---R1--+---+---+---+---+--------------------> GPIO26 (ADC0)
+            	|   |   |   |   |
+			    R3  D1  R2  C1  D2
+			    |   |   |   |   |
+                |   |   +---+---+--------------------> GPIO28 (AGND)
+				+---+--------------------------------> 3.3V OUT (PIN 36)
+Piezo - o--------------------------------------------> GPIO28 (AGND)
 
-R1 = 1 kOhm
-R2 = 1 MOhm
-C1 = 4.7 nF
+R1 = 22 kOhm
+R2 = 22 kOhm
+R3 = 22 kOhm
+C1 = 2.2 nF
 D1 = diode Shottky BAT85 (barre - cathode- du côté du +3.3V, anode du côté du piezo)
 D2 = diode Shottky BAT85 (barre - cathode- du côté du GPIO26, anode du côté du AGND)
 
-Sur le typon, côté cuivre:
-Piezo +	o		> GPIO26 (ADC0)
-				> 3.3V
-				> AGND
-Piezo - o		> AGND
-				> 3.3V
 */
 
 #include <stdlib.h>
@@ -70,40 +65,24 @@ int main(void)
 	uint16_t result;
 	drum_trigger_state_t st;
 	drum_trigger_init(&st);
+	int32_t signal;
 
 	// 5kz sampling
 	drum_trigger_cfg_t cfg = {
-		.th_high_head = 250, .th_low_head = 120,
-		.th_high_rim = 250,	.th_low_rim	= 120,
+		.th_high_head = 2898, .th_low_head = 2838,
+		.th_high_rim  = 2597, .th_low_rim  = 2537,
 
-		.scan_min_ms = 2,		// proche “scan time” des modules
-		.release_ms	 = 4,		// fin de frappe rapide -> bon pour roulements
-		.max_group_ms = 30,		// sécurité
+		.scan_min_ms = 10,
+		.release_ms  = 30,
+		.max_group_ms = 250,
 
-		.retrigger_head_ms = 18,
-		.retrigger_rim_ms = 18,
+		.retrigger_head_ms = 30,
+		.retrigger_rim_ms  = 30,
 
-		.both_ratio_q15 = (uint32_t)(1.50f * 32768.0f),		// si pics à moins de 50% -> BOTH
-		.min_secondary_for_both = 300						// évite faux BOTH sur crosstalk faible
+		.both_ratio_q15 = (uint32_t)(39340),
+		.min_secondary_for_both = 2047
 	};
 
-	/*
-	// 10kz sampling
-	drum_trigger_cfg_t cfg = {
-		.th_high_head = 250, .th_low_head = 120,
-		.th_high_rim = 250,	.th_low_rim	= 120,
-
-		.scan_min_ms = 2,		// proche “scan time” des modules
-		.release_ms	 = 3,		// fin de frappe rapide -> bon pour roulements
-		.max_group_ms = 30,		// sécurité
-
-		.retrigger_head_ms = 15,
-		.retrigger_rim_ms = 15,
-
-		.both_ratio_q15 = (uint32_t)(1.50f * 32768.0f),		// si pics à moins de 50% -> BOTH
-		.min_secondary_for_both = 300						// évite faux BOTH sur crosstalk faible
-	};
-	*/
 
 	// Initialize the standard I/O
 	board_init();
@@ -130,9 +109,13 @@ int main(void)
 
 		// read ADC
 		adc_select_input(0);
-		rim = adc_read(); // 0..4095
+		signal = (int32_t) (adc_read() - 2048); // idle adc_read = 2048; we are centering to 0
+        rim = (uint16_t) abs (signal);
+
 		adc_select_input(1);
-		head = adc_read();
+		signal = (int32_t) (adc_read() - 2048); // idle adc_read = 2048; we are centering to 0
+        head = (uint16_t) abs (signal);
+
 
 		// determine if drum was hit
 		drum_hit_t hit = drum_trigger_update (&st, &cfg, head, rim, board_millis());
