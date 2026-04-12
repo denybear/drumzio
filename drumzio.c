@@ -40,11 +40,11 @@ static drum_trigger_cfg_t trigger_cfg = {
 	.th_high_rim  = 507, .th_low_rim  = 305,
 
 	.scan_min_ms = 10,
-	.release_ms  = 50,
+	.release_ms  = 30,
 	.max_group_ms = 250,
 
-	.retrigger_head_ms = 50,
-	.retrigger_rim_ms  = 50,
+	.retrigger_head_ms = 30,
+	.retrigger_rim_ms  = 30,
 
 	.both_ratio_q15 = (uint32_t)(39321),
 	.min_secondary_for_both = 528
@@ -219,12 +219,9 @@ bool send_hid_report(uint8_t report_id, drum_hit_kind_t kind)
 			if (kind == DRUM_HIT_HEAD) keycode[0] = HID_KEY_J;
 			if (kind == DRUM_HIT_RIM) keycode[0] = HID_KEY_K;
 			if (kind == DRUM_HIT_BOTH) {
-				keycode[0] = HID_KEY_J;
-				keycode[1] = HID_KEY_K;
+				keycode[0] = HID_KEY_K;
+				keycode[1] = HID_KEY_J;
 			}
-
-//			tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
-
 
 			// if there is something to send, send a keypress; otherwise send a null report to indicate a key-release
 			if (keycode[0] != 0) {
