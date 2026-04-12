@@ -16,7 +16,8 @@ typedef enum {
 	DRUM_HIT_NONE = 0,
 	DRUM_HIT_HEAD = 1u << 0,		  // peau
 	DRUM_HIT_RIM  = 1u << 1,		  // bord
-	DRUM_HIT_BOTH = (DRUM_HIT_HEAD | DRUM_HIT_RIM)  // rimshot / frappe simultanée
+	DRUM_HIT_BOTH = (DRUM_HIT_HEAD | DRUM_HIT_RIM), // rimshot / frappe simultanée
+	DRUM_HIT_BUTTON = 1u << 2,                    // board button press
 } drum_hit_kind_t;
 
 // ----------------------------

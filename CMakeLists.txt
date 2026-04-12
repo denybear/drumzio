@@ -51,8 +51,6 @@ pico_enable_stdio_usb(drumzio 0)
 target_link_libraries(drumzio
         pico_stdlib
         hardware_adc
-        hardware_dma
-        hardware_irq
         tinyusb_device
         tinyusb_board
         pico_stdlib)

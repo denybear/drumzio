@@ -23,47 +23,88 @@ D2 = diode Shottky BAT85 (barre - cathode- du côté du GPIO26, anode du côté 
 #include <string.h>
 
 #include "pico/stdlib.h"
+#include "pico/time.h"
 #include "bsp/board_api.h"
 #include "tusb.h"
 #include "hardware/adc.h"
-#include "hardware/dma.h"
-#include "hardware/irq.h"
 
 #include "usb_descriptors.h"
 #include "drum_trigger.h"
 
-#define ADC_DMA_BUFFER_WORDS 64
+#define HIT_QUEUE_SIZE 32
+#define INTERVAL_MS 10
 
-static uint16_t adc_dma_buf[ADC_DMA_BUFFER_WORDS];
-static int adc_dma_chan;
-static volatile uint32_t adc_dma_ready_count = 0;
+static drum_trigger_state_t trigger_state;
+static drum_trigger_cfg_t trigger_cfg = {
+	.th_high_head = 426, .th_low_head = 316,
+	.th_high_rim  = 507, .th_low_rim  = 305,
 
-static void adc_dma_handler(void)
+	.scan_min_ms = 10,
+	.release_ms  = 50,
+	.max_group_ms = 250,
+
+	.retrigger_head_ms = 50,
+	.retrigger_rim_ms  = 50,
+
+	.both_ratio_q15 = (uint32_t)(39321),
+	.min_secondary_for_both = 528
+};
+
+static volatile drum_hit_kind_t hit_queue[HIT_QUEUE_SIZE];
+static volatile uint8_t hit_queue_head = 0;
+static volatile uint8_t hit_queue_tail = 0;
+
+static inline void enqueue_hit_event(drum_hit_kind_t kind)
 {
-    dma_hw->ints0 = 1u << adc_dma_chan;
-    adc_dma_ready_count++;
+	uint8_t next_tail = (hit_queue_tail + 1) % HIT_QUEUE_SIZE;
+	if (next_tail != hit_queue_head) {
+		hit_queue[hit_queue_tail] = kind;
+		hit_queue_tail = next_tail;
+	}
 }
 
-static void adc_dma_init(void)
+static bool sample_timer_callback(struct repeating_timer *rt)
 {
-    adc_fifo_drain();
-    adc_set_round_robin((1u << 0) | (1u << 1));
-    adc_fifo_setup(true, true, 1, true, false);
-    adc_set_clkdiv(130.0f); // about 5kHz pair sample rate for two channels
-    adc_run(true);
+	(void) rt;
+	static uint32_t hid_last_sent_ms = 0;
 
-    adc_dma_chan = dma_claim_unused_channel(true);
-    dma_channel_config cfg = dma_channel_get_default_config(adc_dma_chan);
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
-    channel_config_set_read_increment(&cfg, false);
-    channel_config_set_write_increment(&cfg, true);
-    channel_config_set_dreq(&cfg, DREQ_ADC);
+	adc_select_input(0);
+	int32_t signal0 = (int32_t)adc_read() - 2048;
+	adc_select_input(1);
+	int32_t signal1 = (int32_t)adc_read() - 2048;
 
-    dma_channel_configure(adc_dma_chan, &cfg, adc_dma_buf, &adc_hw->fifo, ADC_DMA_BUFFER_WORDS, false);
-    dma_channel_set_irq0_enabled(adc_dma_chan, true);
-    irq_set_exclusive_handler(DMA_IRQ_0, adc_dma_handler);
-    irq_set_enabled(DMA_IRQ_0, true);
-    dma_channel_start(adc_dma_chan);
+	uint16_t rim = (uint16_t)abs(signal0);
+	uint16_t head = (uint16_t)abs(signal1);
+
+	static bool hit_pending_release = false;
+	static bool button_pressed = false;
+
+	// process button event
+	bool btn = board_button_read();
+	if (btn && !button_pressed) {
+		enqueue_hit_event(DRUM_HIT_BUTTON);
+		enqueue_hit_event(DRUM_HIT_NONE);
+		button_pressed = true;
+	}
+	else if (!btn && button_pressed) {
+		button_pressed = false;
+	}
+
+	// process drum hit event
+	drum_hit_t hit = drum_trigger_update(&trigger_state, &trigger_cfg, head, rim, board_millis());
+	if (hit.kind != DRUM_HIT_NONE) {
+		enqueue_hit_event(hit.kind);
+		hit_pending_release = true;
+	} else if (hit_pending_release) {
+		enqueue_hit_event(DRUM_HIT_NONE);
+		hit_pending_release = false;
+	}
+
+	// process 10ms HID report
+    if ((board_millis() - hid_last_sent_ms) >= INTERVAL_MS) enqueue_hit_event(DRUM_HIT_NONE);
+    hid_last_sent_ms = board_millis();
+
+	return true;
 }
 
 /* Blink pattern
@@ -80,7 +121,7 @@ enum	{
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
 void led_blinking_task(void);
-void hid_task(drum_hit_kind_t);
+bool hid_task(drum_hit_kind_t);
 
 
 //--------------------------------------------------------------------+
@@ -89,30 +130,10 @@ void hid_task(drum_hit_kind_t);
 
 int main(void)
 {
-	// variables
-	int i;
-	uint16_t head;
-	uint16_t rim;
-	uint16_t result;
-	drum_trigger_state_t st;
-	drum_trigger_init(&st);
-	int32_t signal;
+	// Initialize the trigger state once for timer sampling.
+	drum_trigger_init(&trigger_state);
 
-	// 5kHz target sampling, handled in hardware via ADC DMA
-	drum_trigger_cfg_t cfg = {
-		.th_high_head = 426, .th_low_head = 316,
-		.th_high_rim  = 507, .th_low_rim  = 305,
-
-		.scan_min_ms = 10,
-		.release_ms  = 50,
-		.max_group_ms = 250,
-
-		.retrigger_head_ms = 50,
-		.retrigger_rim_ms  = 50,
-
-		.both_ratio_q15 = (uint32_t)(39321),
-		.min_secondary_for_both = 528
-	};
+	// 5kHz target sampling, handled by a hardware timer callback
 
 	// Initialize the standard I/O
 	board_init();
@@ -131,8 +152,8 @@ int main(void)
 		board_init_after_tusb();
 	}
 
-	adc_select_input(0);
-	adc_dma_init();
+	struct repeating_timer sample_timer;
+	add_repeating_timer_us(-200, sample_timer_callback, NULL, &sample_timer);
 
 	while (1)
 	{
@@ -140,24 +161,10 @@ int main(void)
 		tud_task();
 		led_blinking_task();
 
-		if (adc_dma_ready_count > 0) {
-			adc_dma_ready_count--;
-			for (int i = 0; i < ADC_DMA_BUFFER_WORDS; i += 2) {
-				int32_t signal0 = (int32_t)adc_dma_buf[i] - 2048;
-				int32_t signal1 = (int32_t)adc_dma_buf[i + 1] - 2048;
-				rim = (uint16_t)abs(signal0);
-				head = (uint16_t)abs(signal1);
-
-				drum_hit_t hit = drum_trigger_update(&st, &cfg, head, rim, board_millis());
-				hid_task(hit.kind);
-
-				if ((i & 0x0F) == 0) {
-					tud_task();
-					led_blinking_task();
-				}
-			}
-			dma_channel_set_read_addr(adc_dma_chan, &adc_hw->fifo, true);
-			dma_channel_start(adc_dma_chan);
+		while (hit_queue_head != hit_queue_tail) {
+			drum_hit_kind_t kind = hit_queue[hit_queue_head];
+			if (hid_task(kind)) hit_queue_head = (hit_queue_head + 1) % HIT_QUEUE_SIZE;
+			else break;		// if hid_task returns false, it means USB is not ready, so we keep the event in queue and try again later
 		}
 	}
 }
@@ -198,19 +205,17 @@ void tud_resume_cb(void)
 // USB HID
 //--------------------------------------------------------------------+
 
-static void send_hid_report(uint8_t report_id, uint32_t btn, drum_hit_kind_t kind)
+bool send_hid_report(uint8_t report_id, drum_hit_kind_t kind)
 {
-	// use to avoid send multiple consecutive zero report for keyboard
-	//static bool null_report_was_sent_before = false;
-	
 	// skip if hid is not ready yet
-	if ( !tud_hid_ready() ) return;
+	if (!tud_hid_ready()) return false;
 
 	switch(report_id) {
 		case REPORT_ID_KEYBOARD:
 		{
 			uint8_t keycode[6] = { 0 };
-			if (btn) keycode[0] = HID_KEY_A;
+			if (kind == DRUM_HIT_NONE) keycode[0] = 0;
+			if (kind == DRUM_HIT_BUTTON) keycode[0] = HID_KEY_A;
 			if (kind == DRUM_HIT_HEAD) keycode[0] = HID_KEY_J;
 			if (kind == DRUM_HIT_RIM) keycode[0] = HID_KEY_K;
 			if (kind == DRUM_HIT_BOTH) {
@@ -218,87 +223,30 @@ static void send_hid_report(uint8_t report_id, uint32_t btn, drum_hit_kind_t kin
 				keycode[1] = HID_KEY_K;
 			}
 
-			// if there is something to send, send a keypress; otherwise send a null report to indicate a key-depress
+//			tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
+
+
+			// if there is something to send, send a keypress; otherwise send a null report to indicate a key-release
 			if (keycode[0] != 0) {
 				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
-				//null_report_was_sent_before = false;
 			}
 			else {
 				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
-
-				//if (!null_report_was_sent_before) tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
-				//null_report_was_sent_before = true;
 			}
 		}
 		break;
 
 		default: break;
 	}
+	return true;
 }
 
 // We will send 1 report for HID keyboard: every 10ms, or when we receive a drum event, or when there is a buffered hit pending.
 // Buffer hits so no event is dropped while USB is not ready.
-void hid_task(drum_hit_kind_t kind)
+bool hid_task(drum_hit_kind_t kind)
 {
-        static drum_hit_kind_t pending_hits[16];
-        static uint8_t pending_head = 0;
-        static uint8_t pending_tail = 0;
-        static bool waiting_release = false;
-        static drum_hit_kind_t previous_kind = DRUM_HIT_NONE;        // previous report kind
-        const uint32_t interval_ms = 10;                            // Poll every 10ms
-        static uint32_t start_ms = 0;
-
-        // Buffer any new drum hit event so it can be sent later when USB is ready.
-        if (kind != DRUM_HIT_NONE) {
-                uint8_t next_tail = (pending_tail + 1) % sizeof(pending_hits);
-                if (next_tail != pending_head) {
-                        pending_hits[pending_tail] = kind;
-                        pending_tail = next_tail;
-                }
-        }
-
-        if ( !tud_hid_ready() ) return;
-
-        uint32_t const btn = board_button_read();                    // read button
-
-        // Remote wakeup
-        if ( tud_suspended() && (btn || (kind != DRUM_HIT_NONE)) ) {
-                tud_remote_wakeup();
-        }
-
-        bool should_send = false;
-        drum_hit_kind_t report_kind = DRUM_HIT_NONE;
-
-        // Prioritize releasing the previous key before sending a new hit.
-        if (waiting_release) {
-                should_send = true;
-                report_kind = DRUM_HIT_NONE;
-                waiting_release = false;
-        }
-        else if (pending_head != pending_tail) {
-                should_send = true;
-                report_kind = pending_hits[pending_head];
-                pending_head = (pending_head + 1) % sizeof(pending_hits);
-                waiting_release = true;
-        }
-        else if (btn || previous_kind != DRUM_HIT_NONE) {
-                if ((board_millis() - start_ms) >= interval_ms) {
-                        should_send = true;
-                        report_kind = DRUM_HIT_NONE;
-                }
-        }
-        else {
-                if ((board_millis() - start_ms) < interval_ms) return;
-                should_send = true;
-                report_kind = DRUM_HIT_NONE;
-        }
-
-        if (!should_send) return;
-
-        start_ms = board_millis();                                    // here: either 10ms have elapsed, or a report is due, or a buffered hit is being sent
-        send_hid_report(REPORT_ID_KEYBOARD, btn, report_kind);
-
-        previous_kind = report_kind;
+        if (!tud_hid_ready()) return false;
+        return send_hid_report(REPORT_ID_KEYBOARD, kind);
 }
 
 // Invoked when sent REPORT successfully to host
