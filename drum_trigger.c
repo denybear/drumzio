@@ -84,22 +84,24 @@ drum_hit_t drum_trigger_update(drum_trigger_state_t *st,
 			out.kind = DRUM_HIT_RIM;
 		} else { // head_hit && rim_hit
 			// Both exceeded high thresholds: check if they're balanced enough to be BOTH
-			// Simple rule: if both are strong (>= th_high) and neither is more than 2x stronger, it's BOTH
-			uint16_t maxv = (ph >= pr) ? ph : pr;
-			uint16_t minv = (ph >= pr) ? pr : ph;
-			
-			// Ratio 2.0 = allow one channel to be at most 2x stronger than the other
-			bool balanced_enough = (maxv <= minv * 2);
-			
-			if (balanced_enough) {
-				out.kind = DRUM_HIT_BOTH;
-			} else {
-				// One channel much stronger: classify as the dominant one
-				out.kind = (ph >= pr) ? DRUM_HIT_HEAD : DRUM_HIT_RIM;
-			}
-		}
+            uint16_t maxv = u16_max(ph, pr);
+            uint16_t minv = u16_min(ph, pr);
 
-		out.peak_head = ph;
+            bool balanced_enough = false;
+            if (minv > 0) {
+                balanced_enough = (((uint32_t)maxv << 15) <= cfg->both_ratio_q15 * (uint32_t)minv);
+            }
+            bool enough_secondary = minv >= cfg->min_secondary_for_both;
+
+            if (balanced_enough && enough_secondary) {
+                out.kind = DRUM_HIT_BOTH;
+            } else {
+                out.kind = (ph >= pr) ? DRUM_HIT_HEAD : DRUM_HIT_RIM;
+            }
+
+        }
+
+        out.peak_head = ph;
 		out.peak_rim  = pr;
 
 		// Retrigger/Mask : on verrouille seulement les zones réellement “déclarées”
