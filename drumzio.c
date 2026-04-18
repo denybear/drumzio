@@ -153,7 +153,7 @@ int main(void)
 	}
 
 	struct repeating_timer sample_timer;
-	add_repeating_timer_us(-200, sample_timer_callback, NULL, &sample_timer);
+	add_repeating_timer_us(-1000, sample_timer_callback, NULL, &sample_timer);
 
 	while (1)
 	{
@@ -228,7 +228,7 @@ bool send_hid_report(uint8_t report_id, drum_hit_kind_t kind)
 				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
 			}
 			else {
-				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
+				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);	// corresponds to sending keycode to 0x00 (6 bytes set to 0)
 			}
 		}
 		break;
