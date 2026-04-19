@@ -1,122 +1,66 @@
-// drum_trigger.c
 #include "drum_trigger.h"
 
-static inline bool elapsed(uint32_t now, uint32_t since, uint32_t dt) {
-	return (uint32_t)(now - since) >= dt; // ok si overflow uint32
+void drum_trigger_init(drum_trigger_state_t *st) {
+    if (st) {
+        *st = (drum_trigger_state_t){0};
+    }
 }
 
-static inline uint32_t ratio_q15(uint16_t maxv, uint16_t minv) {
-	if (minv == 0) return 0xFFFFFFFFu;
-	// (max/min) en Q15
-	return ((uint32_t)maxv << 15) / (uint32_t)minv;
-}
+drum_hit_t drum_trigger_update(drum_trigger_state_t *st, const drum_trigger_cfg_t *cfg, 
+                               uint16_t adc_head, uint16_t adc_rim, uint32_t now_us) {
+    drum_hit_t out = { .kind = DRUM_HIT_NONE, .peak_head = 0, .peak_rim = 0, .t_us = now_us };
 
-static inline uint16_t u16_max(uint16_t a, uint16_t b) { return a > b ? a : b; }
-static inline uint16_t u16_min(uint16_t a, uint16_t b) { return a < b ? a : b; }
-static inline uint32_t u32_max(uint32_t a, uint32_t b) { return a > b ? a : b; }
-static inline uint32_t u32_min(uint32_t a, uint32_t b) { return a < b ? a : b; }
+    // 1. ÉTAT INACTIF
+    if (!st->group_active) {
+        // Vérification du retrigger (temps mort après la dernière frappe validée)
+        bool head_ready = (now_us - st->last_hit_head_us >= cfg->retrigger_us);
+        bool rim_ready  = (now_us - st->last_hit_rim_us >= cfg->retrigger_us);
 
+        // Détection du dépassement de seuil
+        bool head_trig = (adc_head >= cfg->th_high_head) && head_ready;
+        bool rim_trig  = (adc_rim  >= cfg->th_high_rim) && rim_ready;
 
-drum_hit_t drum_trigger_update(drum_trigger_state_t *st,
-							   const drum_trigger_cfg_t *cfg,
-							   uint16_t adc_head, uint16_t adc_rim,
-							   uint32_t now_ms)
-{
-	drum_hit_t out = { .kind = DRUM_HIT_NONE, .peak_head = 0, .peak_rim = 0, .t_ms = now_ms };
+        if (head_trig || rim_trig) {
+            st->group_active = true;
+            st->group_start_us = now_us;
+            st->peak_head = adc_head;
+            st->peak_rim  = adc_rim;
+            st->head_was_active = head_trig;
+            st->rim_was_active  = rim_trig;
+        }
+        return out;
+    }
 
-	// --- 1) Démarrage du groupe si inactif ---
-	if (!st->group_active) {
-		bool head_ready = elapsed(now_ms, st->last_hit_head_ms, cfg->retrigger_head_ms);
-		bool rim_ready  = elapsed(now_ms, st->last_hit_rim_ms,  cfg->retrigger_rim_ms);
+    // 2. ÉTAT ACTIF : CAPTURE DES PICS
+    if (adc_head > st->peak_head) st->peak_head = adc_head;
+    if (adc_rim  > st->peak_rim)  st->peak_rim  = adc_rim;
 
-		bool head_start = head_ready && (adc_head >= cfg->th_high_head);
-		bool rim_start  = rim_ready  && (adc_rim  >= cfg->th_high_rim);
-
-		if (head_start || rim_start) {
-			st->group_active = true;
-			st->group_start_ms = now_ms;
-
-			st->peak_head = adc_head;
-			st->peak_rim  = adc_rim;
-
-			st->seen_high_head = head_start || (adc_head >= cfg->th_high_head);
-			st->seen_high_rim  = rim_start  || (adc_rim  >= cfg->th_high_rim);
-
-			// init last_above_low_*: si déjà au-dessus du low, on met now, sinon on met start
-			st->last_above_low_head_ms = (adc_head >= cfg->th_low_head) ? now_ms : now_ms;
-			st->last_above_low_rim_ms  = (adc_rim  >= cfg->th_low_rim ) ? now_ms : now_ms;
-		}
-		return out; // pas d'event au démarrage
-	}
-
-	// --- 2) Groupe actif : mise à jour des pics et des timers ---
-	st->peak_head = u16_max(st->peak_head, adc_head);
-	st->peak_rim  = u16_max(st->peak_rim,  adc_rim);
-
-	if (adc_head >= cfg->th_high_head) st->seen_high_head = true;
-	if (adc_rim  >= cfg->th_high_rim ) st->seen_high_rim  = true;
-
-	if (adc_head >= cfg->th_low_head) st->last_above_low_head_ms = now_ms;
-	if (adc_rim  >= cfg->th_low_rim ) st->last_above_low_rim_ms  = now_ms;
-
-	uint32_t last_above_low_ms = u32_max(st->last_above_low_head_ms, st->last_above_low_rim_ms);
-
-	bool min_scan_ok = elapsed(now_ms, st->group_start_ms, cfg->scan_min_ms);
-	bool released	= elapsed(now_ms, last_above_low_ms, cfg->release_ms);
-	bool timeout	 = elapsed(now_ms, st->group_start_ms, cfg->max_group_ms);
-
-	// --- 3) Fin de groupe => décision et émission d'un event unique ---
-	if ((min_scan_ok && released) || timeout) {
-
-		// pics finaux
-		uint16_t ph = st->peak_head;
-		uint16_t pr = st->peak_rim;
-
-		bool head_hit = st->seen_high_head && (ph >= cfg->th_high_head);
-		bool rim_hit  = st->seen_high_rim  && (pr >= cfg->th_high_rim);
-
-		// classification
-		if (!head_hit && !rim_hit) {
-			out.kind = DRUM_HIT_NONE;
-		} else if (head_hit && !rim_hit) {
-			out.kind = DRUM_HIT_HEAD;
-		} else if (!head_hit && rim_hit) {
-			out.kind = DRUM_HIT_RIM;
-		} else { // head_hit && rim_hit
-			// Both exceeded high thresholds: check if they're balanced enough to be BOTH
-            uint16_t maxv = u16_max(ph, pr);
-            uint16_t minv = u16_min(ph, pr);
-
-            bool balanced_enough = false;
-            if (minv > 0) {
-                balanced_enough = (((uint32_t)maxv << 15) <= cfg->both_ratio_q15 * (uint32_t)minv);
-            }
-            bool enough_secondary = minv >= cfg->min_secondary_for_both;
-
-            if (balanced_enough && enough_secondary) {
-                out.kind = DRUM_HIT_BOTH;
-            } else {
-                out.kind = (ph >= pr) ? DRUM_HIT_HEAD : DRUM_HIT_RIM;
-            }
-
+    uint32_t duration = now_us - st->group_start_us;
+    
+    // On force la fin dès qu'on dépasse scan_min_us (pas besoin d'attendre le release pour un jeu de rythme)
+    if (duration >= cfg->scan_min_us) {
+        
+        // --- LOGIQUE D'EXCLUSION (CROSSTALK) ---
+        // Le plus fort gagne. On ajoute une petite marge de priorité au Head.
+        if (st->peak_head >= (st->peak_rim - 100)) {
+            out.kind = DRUM_HIT_HEAD;
+            st->last_hit_head_us = now_us;
+            // Verrouillage agressif du Rim pour éviter que la vibration résiduelle ne le déclenche
+            st->last_hit_rim_us = now_us + cfg->crosstalk_min_us; 
+        } else {
+            out.kind = DRUM_HIT_RIM;
+            st->last_hit_rim_us = now_us;
+            // Verrouillage agressif du Head
+            st->last_hit_head_us = now_us + cfg->crosstalk_min_us;
         }
 
-        out.peak_head = ph;
-		out.peak_rim  = pr;
+        out.peak_head = st->peak_head;
+        out.peak_rim  = st->peak_rim;
+        
+        st->group_active = false;
+        st->peak_head = 0;
+        st->peak_rim = 0;
+    }
 
-		// Retrigger/Mask : on verrouille seulement les zones réellement “déclarées”
-		if (out.kind & DRUM_HIT_HEAD) st->last_hit_head_ms = now_ms;
-		if (out.kind & DRUM_HIT_RIM)  st->last_hit_rim_ms  = now_ms;
-
-		// reset groupe
-		st->group_active = false;
-		st->seen_high_head = st->seen_high_rim = false;
-		st->peak_head = st->peak_rim = 0;
-
-		return out;
-	}
-
-	return out; // groupe en cours, pas d'event
+    return out;
 }
-
-

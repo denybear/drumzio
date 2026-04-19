@@ -31,23 +31,28 @@ D2 = diode Shottky BAT85 (barre - cathode- du côté du GPIO26, anode du côté 
 #include "usb_descriptors.h"
 #include "drum_trigger.h"
 
-#define HIT_QUEUE_SIZE 32
+#define HIT_QUEUE_SIZE 64
 #define INTERVAL_MS 10
 
 static drum_trigger_state_t trigger_state;
 static drum_trigger_cfg_t trigger_cfg = {
-	.th_high_head = 426, .th_low_head = 316,
-	.th_high_rim  = 507, .th_low_rim  = 305,
+    // Seuils plus élevés pour ignorer les petites vibrations parasites
+    .th_high_head = 800, 
+    .th_low_head  = 700, 
+    
+    .th_high_rim  = 900, 
+    .th_low_rim   = 800,
 
-	.scan_min_ms = 10,
-	.release_ms  = 30,
-	.max_group_ms = 250,
+    // Fenêtre de capture (très courte pour minimiser le lag)
+    .scan_min_us  = 1500, // 1.5 ms
 
-	.retrigger_head_ms = 30,
-	.retrigger_rim_ms  = 30,
+    // Retrigger (le secret contre les frappes multiples)
+    // 30ms permet de jouer jusqu'à 2000 BPM, tout en supprimant les rebonds du piezo.
+    .retrigger_us = 30000, 
 
-	.both_ratio_q15 = (uint32_t)(39321),
-	.min_secondary_for_both = 528
+    // Exclusion mutuelle (Crosstalk)
+    // Si on tape le Rim, on ignore le Head pendant 20ms de plus.
+    .crosstalk_min_us = 20000 
 };
 
 static volatile drum_hit_kind_t hit_queue[HIT_QUEUE_SIZE];
@@ -91,18 +96,17 @@ static bool sample_timer_callback(struct repeating_timer *rt)
 	}
 
 	// process drum hit event
-	drum_hit_t hit = drum_trigger_update(&trigger_state, &trigger_cfg, head, rim, board_millis());
+	drum_hit_t hit = drum_trigger_update(&trigger_state, &trigger_cfg, head, rim, to_us_since_boot (get_absolute_time()));
 	if (hit.kind != DRUM_HIT_NONE) {
-		enqueue_hit_event(hit.kind);
-		hit_pending_release = true;
-	} else if (hit_pending_release) {
-		enqueue_hit_event(DRUM_HIT_NONE);
-		hit_pending_release = false;
+		enqueue_hit_event(hit.kind);		// we rely on tiny USB to send HID events every 1ms
+		enqueue_hit_event(DRUM_HIT_NONE);	// therefore we can enqueue 2 events at once, they should be sent with 1ms between them
 	}
 
-	// process 10ms HID report
-    if ((board_millis() - hid_last_sent_ms) >= INTERVAL_MS) enqueue_hit_event(DRUM_HIT_NONE);
-    hid_last_sent_ms = board_millis();
+	// process 10ms HID reportq
+    if ((board_millis() - hid_last_sent_ms) >= INTERVAL_MS) {
+		enqueue_hit_event(DRUM_HIT_NONE);   
+		hid_last_sent_ms = board_millis();
+	}
 
 	return true;
 }
@@ -133,7 +137,7 @@ int main(void)
 	// Initialize the trigger state once for timer sampling.
 	drum_trigger_init(&trigger_state);
 
-	// 5kHz target sampling, handled by a hardware timer callback
+	// 50kHz target sampling, handled by a hardware timer callback
 
 	// Initialize the standard I/O
 	board_init();
@@ -153,14 +157,14 @@ int main(void)
 	}
 
 	struct repeating_timer sample_timer;
-	add_repeating_timer_us(-1000, sample_timer_callback, NULL, &sample_timer);
+	add_repeating_timer_us(20, sample_timer_callback, NULL, &sample_timer);	// 50kHz sampling rate 
 
 	while (1)
 	{
 		// tinyusb device task
-		tud_task();
+        tud_task();
 		led_blinking_task();
-
+		
 		while (hit_queue_head != hit_queue_tail) {
 			drum_hit_kind_t kind = hit_queue[hit_queue_head];
 			if (hid_task(kind)) hit_queue_head = (hit_queue_head + 1) % HIT_QUEUE_SIZE;
@@ -218,17 +222,14 @@ bool send_hid_report(uint8_t report_id, drum_hit_kind_t kind)
 			if (kind == DRUM_HIT_BUTTON) keycode[0] = HID_KEY_A;
 			if (kind == DRUM_HIT_HEAD) keycode[0] = HID_KEY_J;
 			if (kind == DRUM_HIT_RIM) keycode[0] = HID_KEY_K;
-			if (kind == DRUM_HIT_BOTH) {
-				keycode[0] = HID_KEY_K;
-				keycode[1] = HID_KEY_J;
-			}
+
 
 			// if there is something to send, send a keypress; otherwise send a null report to indicate a key-release
 			if (keycode[0] != 0) {
-				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
+				return tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
 			}
 			else {
-				tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);	// corresponds to sending keycode to 0x00 (6 bytes set to 0)
+				return tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);	// corresponds to sending keycode to 0x00 (6 bytes set to 0)
 			}
 		}
 		break;
@@ -239,11 +240,12 @@ bool send_hid_report(uint8_t report_id, drum_hit_kind_t kind)
 }
 
 // We will send 1 report for HID keyboard: every 10ms, or when we receive a drum event, or when there is a buffered hit pending.
+// We fully rely on tinyUSB to manage the 1ms timer between sending of 2 USB reports
 // Buffer hits so no event is dropped while USB is not ready.
 bool hid_task(drum_hit_kind_t kind)
 {
         if (!tud_hid_ready()) return false;
-        return send_hid_report(REPORT_ID_KEYBOARD, kind);
+		return send_hid_report(REPORT_ID_KEYBOARD, kind);
 }
 
 // Invoked when sent REPORT successfully to host
