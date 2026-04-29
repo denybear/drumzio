@@ -96,7 +96,7 @@ static bool sample_timer_callback(struct repeating_timer *rt)
 	}
 
 	// process drum hit event
-	drum_hit_t hit = drum_trigger_update(&trigger_state, &trigger_cfg, head, rim, to_us_since_boot (get_absolute_time()));
+	drum_hit_t hit = drum_trigger_update(&trigger_state, &trigger_cfg, head, rim, time_us_32());
 	if (hit.kind != DRUM_HIT_NONE) {
 		enqueue_hit_event(hit.kind);		// we rely on tiny USB to send HID events every 1ms
 		enqueue_hit_event(DRUM_HIT_NONE);	// therefore we can enqueue 2 events at once, they should be sent with 1ms between them

@@ -11,9 +11,9 @@ typedef enum {
 
 typedef struct {
     drum_hit_kind_t kind;
-    uint16_t peak_head;
-    uint16_t peak_rim;
-    uint32_t t_us;
+    uint16_t p_h;    // peak_head -> p_h (plus court pour le JSON)
+    uint16_t p_r;    // peak_rim  -> p_r
+    uint32_t t_us;   // Timestamp en microsecondes
 } drum_hit_t;
 
 typedef struct {
